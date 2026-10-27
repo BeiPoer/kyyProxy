@@ -1,0 +1,12 @@
+{
+  "name": "kyy-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI Videos API adapter for kyyReactApi",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

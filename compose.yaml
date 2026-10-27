@@ -1,0 +1,25 @@
+services:
+  kyy-proxy:
+    build: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      PORT: 8080
+      DATA_DIR: /app/data
+      KYY_BASE_URL: ${KYY_BASE_URL:-https://zcbservice.aizfw.cn/kyyReactApiServer}
+      KYY_API_KEY: ${KYY_API_KEY:?请在 .env 中配置 KYY_API_KEY}
+      PROXY_API_KEY: ${PROXY_API_KEY:?请在 .env 中配置 PROXY_API_KEY}
+      KYY_MODEL: ${KYY_MODEL:-sd_2.0_special}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    volumes:
+      - kyy-data:/app/data
+    stop_grace_period: 75s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  kyy-data:
