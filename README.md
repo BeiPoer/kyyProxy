@@ -1,184 +1,218 @@
 # kyyProxy
 
-把 OpenAI Videos API 请求转换为 kyyReactApi 的 Seedance 2.0 请求。Node.js 24，零第三方运行依赖，支持 `docker compose up -d --build`。
+将火山方舟 Seedance 官方任务接口格式转换为 kyyReactApi 的 Seedance 2.0 请求。Node.js 24，零第三方运行依赖，支持 Docker Compose 部署。
 
-客户端 → `kyyProxy /v1/videos` → 素材登记/审核 → `kyyReactApi /v2/model-center/tasks`
+客户端 → POST /api/v3/contents/generations/tasks → kyy 素材登记及审核 → kyy 视频任务
 
-## Docker Compose 部署
+## 部署
 
-在本项目目录执行：
+在项目目录复制配置：
 
-```powershell
+~~~powershell
 Copy-Item .env.example .env
-```
+~~~
 
-Linux/macOS 使用 `cp .env.example .env`。编辑 `.env`：
+Linux/macOS 使用 cp .env.example .env。编辑 .env：
 
-```dotenv
+~~~dotenv
 KYY_API_KEY=你的kyyReactApi密钥
 PROXY_API_KEY=你自行生成的代理访问密钥
-KYY_MODEL=sd_2.0_special
 HOST_PORT=8080
-# 仅上传文件/Base64 图片需要，公网域名须反向代理到本服务。
+# 仅图片 Base64 输入需要，必须通过公网 HTTPS 反向代理到本服务
 PUBLIC_BASE_URL=https://video.example.com
-```
+~~~
 
-可用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 生成代理密钥。客户端只使用 `PROXY_API_KEY`，上游密钥保留在服务器。两项密钥必填；Compose 会在缺失时拒绝启动。
+可以使用以下命令生成代理密钥：
 
-```sh
+~~~sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+~~~
+
+启动和查看日志：
+
+~~~sh
 docker compose up -d --build
 docker compose ps
 docker compose logs -f --tail=100
-```
+~~~
 
-默认访问 `http://localhost:8080`，健康检查为 `GET /healthz`。这是服务健康检查，不会调用付费上游。公网部署时通过 HTTPS 反向代理访问。
+默认端口 8080，健康检查为 GET /healthz。KYY_BASE_URL 默认是 https://zcbservice.aizfw.cn/kyyReactApiServer。客户端使用 PROXY_API_KEY，上游使用服务器配置的 KYY_API_KEY。密钥缺失时 Compose 会拒绝启动。
 
-任务记录和临时图片保存在 `kyy-data` 命名卷。`docker compose down` 保留数据；**`docker compose down -v` 会删除任务记录和上传图片**。更新后重新执行 `docker compose up -d --build`。
+任务和临时图片保存在 kyy-data 命名卷。docker compose down 保留数据；**docker compose down -v 会删除任务记录和图片**。更新代码后执行 docker compose up -d --build。
 
-## 客户端配置
+## 客户端接入
 
-| 配置 | 值 |
+| 配置 | 内容 |
 | --- | --- |
-| 接口类型 | OpenAI Video |
-| Base URL | `http://localhost:8080/v1` 或 `https://你的代理域名/v1` |
-| API Key | `.env` 中的 `PROXY_API_KEY` |
-| 推荐模型 | `sd_2.0_special` |
+| 接口类型 | 火山引擎官方（Ark / Seedance） |
+| Base URL | http://localhost:8080/api/v3 |
+| API Key | PROXY_API_KEY |
+| 模型 | doubao-seedance-2-0-260128，或下面列出的 kyy 模型 ID |
 
-`image-video-flow` 的模型设置可以直接填写上述配置。若客户端运行在别的容器中，`localhost` 指该容器自身，应改用可访问的代理服务地址。
+image-video-flow 的模型设置可以使用以上配置。如果客户端运行在其他容器中，localhost 指它自身，应使用可访问的代理地址。公网访问应使用 HTTPS。
 
-支持 `sora-2`、`sora-2-pro` 作为兼容别名，两者都映射到 `KYY_MODEL`，实际运行的是 Seedance。也可以直接指定以下上游模型：
-
-- `sd_2.0_special`、`sd_2.0_fast_special`、`sd_2.0_mini_special`
-- `sd_2.0_discount`、`sd_2.0_fast_discount`、`sd_2.0_mini_discount`
-
-`GET /v1/models` 返回这些模型及别名。
-
-## 接口与示例
-
-视频接口使用标准路径 `/v1/videos`。
-
-| 方法 | 路径 | 作用 |
+| 方法 | 路径 | 返回 |
 | --- | --- | --- |
-| POST | `/v1/videos` | 创建任务，立即返回本地 `video_...` ID |
-| GET | `/v1/videos/{id}` | 查询状态并转换为 OpenAI Video 对象 |
-| GET | `/v1/videos/{id}/content` | 流式下载 MP4，未完成时返回 409 |
-| GET | `/v1/models` | 查询可用模型 |
-| GET | `/healthz` | 无需鉴权的健康检查 |
+| POST | /api/v3/contents/generations/tasks | {"id":"cgt-..."} |
+| GET | /api/v3/contents/generations/tasks/{id} | 官方任务结构，成功时包含 content.video_url |
+| GET | /healthz | 服务健康状态，不调用上游 |
 
-除健康检查和限时素材地址外，所有接口要求 `Authorization: Bearer <PROXY_API_KEY>`。这是单个上游账户、单个代理密钥的部署；持有该代理密钥的客户端共享任务访问权限。
+业务接口均要求 Authorization: Bearer <PROXY_API_KEY>。健康检查和限时图片链接无需 Bearer。单个代理密钥对应单个上游账户，持有该密钥的客户端共享任务访问权限。
 
-以下 curl 示例为 Bash 写法。Windows PowerShell 可使用 `curl.exe`，或使用后面的 PowerShell 示例。
+## 创建与查询示例
 
-```sh
-curl http://localhost:8080/v1/videos \
-  -H 'Authorization: Bearer YOUR_PROXY_KEY' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"sd_2.0_special","prompt":"镜头缓慢推进，海边日落，电影质感","seconds":"8","size":"1280x720"}'
-```
+请求 Content-Type 必须为 application/json。创建示例：
 
-参考图 URL：
-
-```json
+~~~json
 {
-  "model": "sd_2.0_special",
-  "prompt": "让图中的人物缓慢转身",
-  "seconds": "8",
-  "size": "720x1280",
-  "input_reference": { "image_url": "https://example.com/input.png" }
+  "model": "doubao-seedance-2-0-260128",
+  "content": [
+    {
+      "type": "text",
+      "text": "镜头缓慢推进，海边日落，电影质感"
+    }
+  ],
+  "duration": 8,
+  "ratio": "16:9",
+  "resolution": "720p",
+  "generate_audio": true,
+  "watermark": false
 }
-```
+~~~
 
-上传参考图文件：
+PowerShell 完整调用：
 
-```sh
-curl http://localhost:8080/v1/videos \
-  -H 'Authorization: Bearer YOUR_PROXY_KEY' \
-  -F 'model=sd_2.0_special' \
-  -F 'prompt=让图中的人物缓慢转身' \
-  -F 'seconds=8' \
-  -F 'size=720x1280' \
-  -F 'input_reference=@input.png;type=image/png'
-```
-
-查询、下载：
-
-```sh
-curl http://localhost:8080/v1/videos/video_YOUR_ID \
-  -H 'Authorization: Bearer YOUR_PROXY_KEY'
-curl http://localhost:8080/v1/videos/video_YOUR_ID/content \
-  -H 'Authorization: Bearer YOUR_PROXY_KEY' -o result.mp4
-```
-
-PowerShell 完整示例：
-
-```powershell
-$base = 'http://localhost:8080/v1'
+~~~powershell
+$base = 'http://localhost:8080/api/v3'
 $headers = @{ Authorization = 'Bearer YOUR_PROXY_KEY' }
-$body = @{ model = 'sd_2.0_special'; prompt = '海边日落，镜头缓慢推进'; seconds = '8'; size = '1280x720' } | ConvertTo-Json
-$job = Invoke-RestMethod -Method Post -Uri "$base/videos" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$body = @{
+    model = 'doubao-seedance-2-0-260128'
+    content = @(@{ type = 'text'; text = '海边日落，镜头缓慢推进' })
+    duration = 8
+    ratio = '16:9'
+    resolution = '720p'
+    generate_audio = $true
+} | ConvertTo-Json -Depth 5
+$created = Invoke-RestMethod -Method Post -Uri "$base/contents/generations/tasks" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
 do {
     Start-Sleep -Seconds 5
-    $job = Invoke-RestMethod -Uri "$base/videos/$($job.id)" -Headers $headers
-    $job | Select-Object id, status, progress
-} while ($job.status -in @('queued', 'in_progress'))
-if ($job.status -eq 'completed') {
-    Invoke-WebRequest -Uri "$base/videos/$($job.id)/content" -Headers $headers -OutFile result.mp4
+    $task = Invoke-RestMethod -Uri "$base/contents/generations/tasks/$($created.id)" -Headers $headers
+    $task | Select-Object id, status
+} while ($task.status -in @('queued', 'running'))
+if ($task.status -eq 'succeeded') {
+    Invoke-WebRequest -Uri $task.content.video_url -OutFile result.mp4
 } else {
-    $job.error
+    $task.error
 }
-```
+~~~
 
-创建响应包含 `id/object/model/status/progress/created_at/seconds/size/prompt/error` 等 OpenAI Video 字段；查询状态为 `queued`、`in_progress`、`completed` 或 `failed`。素材准备期间保持 `queued`；只有上游提供进度时才更新进度，不虚构百分比。提交成功后额外返回 `upstream_id`，完成后额外返回 `video_url`。视频 URL 有有效期，请及时下载。
+创建成功仅返回任务 ID：
 
-## 参数转换与边界
+~~~json
+{"id":"cgt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"}
+~~~
 
-| OpenAI 输入 | kyyReactApi 输入 |
-| --- | --- |
-| `model` | 原样传递 Seedance 模型；Sora 别名映射到 `KYY_MODEL` |
-| `prompt` | `prompt` |
-| `seconds` | 整数 `duration`，支持 4–15 秒，默认 4 秒 |
-| `size` | `aspect_ratio` + `resolution` 档位 |
-| `input_reference` | 审核后的素材 ID → `first_image` |
+查询成功响应示例：
 
-尺寸映射：
+~~~json
+{
+  "id": "cgt-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "model": "doubao-seedance-2-0-260128",
+  "status": "succeeded",
+  "created_at": 1793090000,
+  "updated_at": 1793090060,
+  "content": {
+    "video_url": "https://example.com/result.mp4"
+  },
+  "duration": 8,
+  "ratio": "16:9",
+  "resolution": "720p",
+  "generate_audio": true,
+  "error": null
+}
+~~~
 
-| size | 比例 | 分辨率 |
+状态使用 queued、running、succeeded、failed、cancelled、expired。素材准备期间为 queued。视频直接从 content.video_url 下载，地址有效期由 kyy 决定，请及时转存。只有上游明确提供 token 用量时才返回 usage，不估算用量或帧率；ratio、resolution 在上游未返回实际值时表示请求的档位，adaptive 不代表已知的最终宽高比。
+
+## 素材格式
+
+在 content 数组中追加以下对象：
+
+~~~json
+{"type":"image_url","image_url":{"url":"https://example.com/first.png"},"role":"first_frame"}
+~~~
+
+| content.type | role | kyy 字段 |
 | --- | --- | --- |
-| `720x1280` / `1280x720` | 9:16 / 16:9 | 720p |
-| `1080x1920` / `1920x1080` | 9:16 / 16:9 | 1080p |
-| `1024x1792` / `1792x1024` | 9:16 / 16:9 | 1080p（近似映射） |
-| `720x720` / `1080x1080` | 1:1 | 720p / 1080p |
+| text | 不填写 | text 文本按顺序用换行连接为 prompt |
+| image_url | first_frame，或省略 | first_image |
+| image_url | last_frame | last_image |
+| image_url | reference_image | reference_images |
+| video_url | reference_video，必填 | reference_videos |
+| audio_url | reference_audio，必填 | reference_audios |
 
-kyy 只接受比例和分辨率档位，因此 **1024×1792、1792×1024 无法保证原始像素尺寸或精确比例**；代理不转码、不裁切。响应的 `size` 保留请求尺寸，实际像素以生成文件为准。
+首尾帧模式最多首帧和尾帧各一张，尾帧必须配首帧；与多模态参考互斥。多模态最多 9 张图片、3 个视频、3 段音频；音频不能单独使用。
 
-`input_reference` 支持 `{ "image_url": "..." }`、URL 字符串、`assetId://ID` 字符串、Base64 data URL，以及 multipart 图片文件。文件/Base64 仅支持 PNG、JPEG、WebP，单图最大 30 MiB，请求体最大 42 MiB。图片分辨率、视频/音频时长等上游条件由素材审核验证。
+url 支持公网 HTTP(S) URL；图片还支持 data:image/png;base64,...、JPEG、WebP Base64。也可引用 kyy 自己的 assetId://ID。**火山的 asset://ID 不能跨平台使用**，请换成原始素材 URL。
 
-扩展字段支持 `first_image`、`last_image`、`reference_images`（最多 9）、`reference_videos`（最多 3）、`reference_audios`（最多 3）、`generate_audio`、`watermark`、`seed`。扩展素材字段使用 URL 或 `assetId://ID`；multipart 的数组和布尔值用 JSON 字符串。首尾帧与多模态参考互斥，音频不能单独使用。`input_reference` 与扩展素材字段互斥。未指定音频和水印时使用上游默认值。
+Base64 图片会保存为 24 小时有效的随机 URL，kyy 通过该地址获取素材。因此需配置 PUBLIC_BASE_URL，并让公网能够访问代理的 /assets/*。已有公网 URL 和 kyy 素材 ID 无需此配置。限时 URL 包含 192 位随机令牌，拥有完整链接的人可在有效期内读取图片，请勿公开分享。
 
-## 素材访问与恢复
+图片单张最大 30 MiB，整个 JSON 请求最大 42 MiB；过期图片在启动时及每小时清理。图片尺寸、视频/音频时长等要求由上游素材审核检查。审核通过后使用 assetId://ID 提交视频生成任务。
 
-kyy 不接受原始 Base64 图片。代理把上传图片保存为随机限时地址，由上游读取，因此上传时必须配置 `PUBLIC_BASE_URL`，并让 kyy 能通过公网 HTTPS 访问 `/assets/*`。仅填写域名不会自动建立公网通道。URL 或既有素材 ID 输入不需要此配置。
+## 模型与参数
 
-素材地址使用 192 位随机令牌，有效期 24 小时，不要求 Bearer Key。拥有完整地址的人可在有效期内读取该图片；不要公开分享素材地址。过期图片在启动时和每小时清理一次。上游审核通过后使用 `assetId://ID` 提交生成任务，准备阶段最长等待约 10 分钟，单次上游 HTTP 请求超时 60 秒。
+官方模型 ID 的对应关系：
 
-任务元数据保存在磁盘，不保存上游或代理密钥。已登记的素材 ID 会保存，重启后继续准备；提交成功的任务继续查询。提交过程中断线或重启而没有拿到上游 ID 时，返回 `submission_uncertain`，不会自动再提交。此时应在 kyy 控制台核对记录，确认未计费后再新建任务。
+| 请求 model | kyy 模型 |
+| --- | --- |
+| doubao-seedance-2-0-260128 | sd_2.0_special |
+| doubao-seedance-2-0-fast-260128 | sd_2.0_fast_special |
+| doubao-seedance-2-0-mini-260615 | sd_2.0_mini_special |
 
-创建请求没有幂等键去重；不要对 POST 开启无条件重试。若客户端在接收创建响应时断线，可查看数据卷 `jobs/*.json` 查找本地任务 ID。没有管理后台、任务列表、删除、Remix、OpenAI Files API、缩略图和多租户账户管理。单进程部署，最多同时准备 4 个任务，等待队列满 100 时返回 429；不要让多个实例共用此数据卷。任务 JSON 长期保留，按需备份和维护磁盘空间。
+也可直接填写 sd_2.0_special、sd_2.0_fast_special、sd_2.0_mini_special、sd_2.0_discount、sd_2.0_fast_discount、sd_2.0_mini_discount。实际生成、计费与可用性由 kyy 决定。
 
-## 本地运行和验证
+- model、content 必填；kyy 要求至少一个非空 text 提示词，合计不超过 32000 字符。
+- duration：4–15 的整数，默认 5；映射到 kyy duration。
+- ratio：16:9、9:16、1:1、4:3、3:4、21:9、adaptive，默认 adaptive；映射到 aspect_ratio。
+- resolution：720p、1080p、4k，默认 720p；具体模型可用档位仍受上游限制。
+- generate_audio：布尔值，默认 true。
+- watermark：布尔值，默认 false。
+- seed：-1 至 2147483647 的整数，传递给上游。
+- tools：支持 [{"type":"web_search"}]，传递给上游。
 
-安装 Node.js 24，复制并填写 `.env` 后：
+覆盖官方创建和单任务查询协议。kyy 能力与火山官方不同，下列功能明确返回错误：duration=-1、480p、无文本输入、音频 Base64、官方素材库 ID、frames、camera_fixed、return_last_frame、callback_url、draft、service_tier、execution_expires_after、priority、safety_identifier 等未映射字段，以及提示词中追加 --dur / --ratio 等弱校验参数。请使用顶层 JSON 参数。任务列表、取消和删除返回 501。
 
-```sh
+## 任务恢复与升级
+
+任务元数据保存在磁盘，不保存上游或代理密钥。已登记的素材 ID 会保存，重启后继续准备；已提交的任务继续查询。素材审核最长等待约 10 分钟，单次上游 HTTP 超时 60 秒。
+
+提交过程中断线或重启而未拿到上游 ID 时，任务失败并返回 submission_uncertain。代理不自动重新提交，应在 kyy 控制台核对记录后再决定是否新建任务。创建请求没有幂等键去重，请勿对 POST 配置无条件重试。若创建响应丢失，可以从数据卷 jobs/*.json 找回本地 ID；其中 remoteId 是 kyy 上游任务 ID。
+
+从旧版升级：
+
+- 已移除 /v1/videos、/v1/video、/v1/models 和 /content 下载接口，不再接收 OpenAI 的 prompt、seconds、size、input_reference 或 multipart。
+- 客户端 Base URL 改为 /api/v3，使用 content、duration、ratio、resolution；成功状态改为 succeeded，地址位于 content.video_url。
+- 旧版 video_... 任务记录保留，可用原 ID 通过新的任务查询路径读取，旧状态自动转换，未完成的素材准备继续恢复。
+- 模型由请求中的 model 选择；旧 .env 中的 KYY_MODEL 已不再使用，可移除。
+
+单进程部署，最多同时准备 4 个任务，准备队列总数达到 100 时返回 429；不要让多个实例共用数据卷。任务 JSON 长期保留，按需备份并维护磁盘空间。
+
+## 本地验证
+
+安装 Node.js 24，填写 .env 后：
+
+~~~sh
 npm start
 npm test
-```
+~~~
 
-没有第三方 npm 依赖，无需执行 `npm install`。本地端口用 `PORT` 配置，默认 8080；`HOST_PORT` 仅用于 Docker。测试用内存模拟上游和临时端口验证创建、轮询、下载、文件/Base64 上传、素材审核、错误映射与重启恢复，不产生付费生成。测试结束自动关闭服务、删除测试临时目录。
+没有第三方 npm 依赖，无需 npm install。本地端口用 PORT 配置，默认 8080；HOST_PORT 仅用于 Docker。测试使用模拟上游和临时端口，不产生付费任务，结束后自动关闭测试服务。
 
 ## 协议参考
 
-- [OpenAI Create a video](https://developers.openai.com/api/reference/resources/videos/methods/create)：兼容其 Videos 请求/响应格式。官方页面已标记原服务停用；本项目实际调用 kyy，不依赖 OpenAI 视频服务可用性。
-- [kyy sd_2.0_special](https://docs.globalaiopc.com/api-reference/model-center/video-gen/sd_2.0_special)
+- [火山方舟：创建视频生成任务](https://www.volcengine.com/docs/82379/1520757)
+- [火山方舟：查询视频生成任务](https://www.volcengine.com/docs/82379/1521309)
+- [Seedance 2.0 系列](https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh)
+- [kyy 视频生成](https://docs.globalaiopc.com/api-reference/model-center/video-gen/sd_2.0_special)
 - [kyy 素材提交](https://docs.globalaiopc.com/api-reference/video/seedance-assets/seedance-asset-upload)
 - [kyy 素材查询](https://docs.globalaiopc.com/api-reference/video/seedance-assets/seedance-asset-detail)

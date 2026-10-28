@@ -11,7 +11,6 @@ services:
       KYY_BASE_URL: ${KYY_BASE_URL:-https://zcbservice.aizfw.cn/kyyReactApiServer}
       KYY_API_KEY: ${KYY_API_KEY:?请在 .env 中配置 KYY_API_KEY}
       PROXY_API_KEY: ${PROXY_API_KEY:?请在 .env 中配置 PROXY_API_KEY}
-      KYY_MODEL: ${KYY_MODEL:-sd_2.0_special}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     volumes:
       - kyy-data:/app/data

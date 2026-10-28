@@ -1,6 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export const models = ['sd_2.0_special', 'sd_2.0_fast_special', 'sd_2.0_mini_special', 'sd_2.0_discount', 'sd_2.0_fast_discount', 'sd_2.0_mini_discount'];
+const modelMap = {
+  'doubao-seedance-2-0-260128': 'sd_2.0_special',
+  'doubao-seedance-2-0-fast-260128': 'sd_2.0_fast_special',
+  'doubao-seedance-2-0-mini-260615': 'sd_2.0_mini_special',
+};
 export function fail(message, status = 400, code = 'invalid_request_error') {
   return Object.assign(new Error(message), { status, code });
 }
@@ -10,31 +15,29 @@ export function httpUrl(value) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw fail('不支持的素材 URL');
   return url.href;
 }
-function reference(value) {
+function reference(value, type) {
   if (typeof value !== 'string') throw fail('素材引用必须是字符串');
+  if (value.startsWith('asset://')) throw fail('火山素材 ID 不能跨平台使用，请提供公网 URL、图片 Base64 或 kyy assetId://ID');
+  if (value.startsWith('data:')) {
+    if (type !== 'image_url' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) throw fail('Base64 仅支持 PNG、JPEG、WebP 图片；视频和音频请使用公网 URL');
+    return value;
+  }
   return /^assetId:\/\/[\w-]+$/.test(value) ? value : httpUrl(value);
 }
 
-// shortcut: 1024/1792 sizes map to a nearby upstream tier; add transcoding only if exact pixels are required.
-const sizes = {
-  '720x1280': ['9:16', '720p'], '1280x720': ['16:9', '720p'],
-  '1024x1792': ['9:16', '1080p'], '1792x1024': ['16:9', '1080p'],
-  '1080x1920': ['9:16', '1080p'], '1920x1080': ['16:9', '1080p'],
-  '720x720': ['1:1', '720p'], '1080x1080': ['1:1', '1080p'],
-};
-export function mapRequest(input, defaultModel) {
+export function mapRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('请求体必须是对象');
-  const allowed = new Set(['model', 'prompt', 'seconds', 'size', 'input_reference', 'reference_images', 'reference_videos', 'reference_audios', 'first_image', 'last_image', 'generate_audio', 'watermark', 'seed']);
+  const allowed = new Set(['model', 'content', 'duration', 'ratio', 'resolution', 'generate_audio', 'watermark', 'seed', 'tools']);
   for (const key of Object.keys(input)) if (!allowed.has(key)) throw fail(`不支持参数 ${key}`);
-  if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 32000) throw fail('prompt 必须是 1–32000 字符的文本');
-  const model = input.model ?? defaultModel;
-  if (typeof model !== 'string' || ![...models, 'sora-2', 'sora-2-pro'].includes(model)) throw fail('不支持的 model，请查询 /v1/models');
-  const seconds = input.seconds ?? '4';
-  if (!['string', 'number'].includes(typeof seconds) || !/^\d+$/.test(String(seconds)) || Number(seconds) < 4 || Number(seconds) > 15) throw fail('seconds 必须是 4–15 的整数');
-  const size = input.size ?? '720x1280';
-  if (typeof size !== 'string' || !Object.hasOwn(sizes, size)) throw fail(`不支持的 size，可用值：${Object.keys(sizes).join(', ')}`);
-  const [aspect_ratio, resolution] = sizes[size];
-  const body = { model: model.startsWith('sora-') ? defaultModel : model, prompt: input.prompt.trim(), duration: Number(seconds), aspect_ratio, resolution };
+  const model = input.model;
+  if (typeof model !== 'string' || (!models.includes(model) && !Object.hasOwn(modelMap, model))) throw fail('model 必填，请使用 README 中的 Seedance 2.0 模型 ID');
+  const duration = input.duration ?? 5;
+  if (!Number.isInteger(duration) || duration < 4 || duration > 15) throw fail('kyy duration 必须为 4–15 的整数，不支持 -1 自动时长');
+  const ratio = input.ratio ?? 'adaptive';
+  if (!['16:9','9:16','1:1','4:3','3:4','21:9','adaptive'].includes(ratio)) throw fail('不支持的 ratio');
+  const resolution = input.resolution ?? '720p';
+  if (!['720p','1080p','4k'].includes(resolution)) throw fail('resolution 支持 720p、1080p、4k；kyy 不支持 480p');
+  const body = { model: Object.hasOwn(modelMap, model) ? modelMap[model] : model, prompt: '', duration, aspect_ratio: ratio, resolution, generate_audio: true, watermark: false };
   for (const name of ['generate_audio', 'watermark']) {
     if (input[name] !== undefined) {
       if (typeof input[name] !== 'boolean') throw fail(`${name} 必须是布尔值`);
@@ -42,28 +45,42 @@ export function mapRequest(input, defaultModel) {
     }
   }
   if (input.seed !== undefined) {
-    if (!Number.isSafeInteger(input.seed) || input.seed < -1) throw fail('seed 必须是大于等于 -1 的安全整数');
+    if (!Number.isInteger(input.seed) || input.seed < -1 || input.seed > 2147483647) throw fail('seed 必须为 -1 至 2147483647 的整数');
     body.seed = input.seed;
   }
-  for (const [key, max] of [['reference_images', 9], ['reference_videos', 3], ['reference_audios', 3]]) {
-    if (input[key] !== undefined) {
-      if (!Array.isArray(input[key]) || input[key].length > max) throw fail(`${key} 最多 ${max} 个素材`);
-      if (input[key].length) body[key] = input[key].map(reference);
+  if (input.tools !== undefined) {
+    if (!Array.isArray(input.tools) || input.tools.length > 1 || input.tools.some(tool => !tool || typeof tool !== 'object' || Object.keys(tool).length !== 1 || tool.type !== 'web_search')) throw fail('tools 仅支持 [{"type":"web_search"}]');
+    body.tools = input.tools;
+  }
+  if (!Array.isArray(input.content) || !input.content.length) throw fail('content 必须是非空数组');
+  const texts = [];
+  for (const item of input.content) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw fail('content 元素必须是对象');
+    if (item.type === 'text') {
+      if (Object.keys(item).some(key => !['type','text'].includes(key)) || typeof item.text !== 'string' || !item.text.trim()) throw fail('text 元素必须包含非空 text');
+      if (/(?:^|\s)--(?:rs|rt|dur|seed|cf|wm|resolution|ratio|duration|frames|camera_fixed|watermark)(?:\s|=|$)/.test(item.text)) throw fail('不支持提示词中的 --参数，请使用请求体的 duration、ratio、resolution 等字段');
+      texts.push(item.text.trim()); continue;
     }
+    if (!['image_url','video_url','audio_url'].includes(item.type)) throw fail('content.type 仅支持 text、image_url、video_url、audio_url');
+    const media = item[item.type];
+    if (Object.keys(item).some(key => !['type','role',item.type].includes(key)) || !media || typeof media !== 'object' || Object.keys(media).length !== 1 || typeof media.url !== 'string') throw fail(`${item.type} 必须为 {"url":"..."}`);
+    const role = item.role ?? (item.type === 'image_url' ? 'first_frame' : undefined);
+    const roles = item.type === 'image_url' ? ['first_frame','last_frame','reference_image'] : item.type === 'video_url' ? ['reference_video'] : ['reference_audio'];
+    if (!roles.includes(role)) throw fail(`${item.type} 的 role 必须为 ${roles.join('、')}`);
+    const value = reference(media.url, item.type);
+    const field = { first_frame: 'first_image', last_frame: 'last_image', reference_image: 'reference_images', reference_video: 'reference_videos', reference_audio: 'reference_audios' }[role];
+    if (role === 'first_frame' || role === 'last_frame') {
+      if (body[field]) throw fail(`${role} 只能提供一张图片`);
+      body[field] = value;
+    } else (body[field] ||= []).push(value);
   }
-  for (const key of ['first_image', 'last_image']) if (input[key] !== undefined) body[key] = reference(input[key]);
-  if (input.input_reference !== undefined) {
-    if (body.first_image || body.last_image || body.reference_images || body.reference_videos || body.reference_audios) throw fail('input_reference 不能与扩展素材字段混用');
-    const ref = input.input_reference;
-    if (typeof ref === 'object' && ref !== null && !Array.isArray(ref)) {
-      if (Object.keys(ref).length !== 1 || !Object.hasOwn(ref, 'image_url')) throw fail('input_reference 仅支持 image_url，不支持 OpenAI file_id');
-      body.first_image = reference(ref.image_url);
-    } else body.first_image = reference(ref);
-  }
+  body.prompt = texts.join('\n');
+  if (!body.prompt || body.prompt.length > 32000) throw fail('kyy 要求至少一个 text 提示词，合计 1–32000 字符');
+  for (const [key, max] of [['reference_images',9],['reference_videos',3],['reference_audios',3]]) if (body[key]?.length > max) throw fail(`${key} 最多 ${max} 个素材`);
   if ((body.first_image || body.last_image) && (body.reference_images || body.reference_videos || body.reference_audios)) throw fail('首尾帧不能与多模态参考素材混用');
-  if (body.last_image && !body.first_image) throw fail('last_image 需要 first_image');
+  if (body.last_image && !body.first_image) throw fail('last_frame 需要 first_frame');
   if (body.reference_audios && !body.reference_images && !body.reference_videos) throw fail('音频参考需要同时提供图片或视频');
-  return { body, model, size, seconds: String(Number(seconds)) };
+  return { body, model };
 }
 
 export function upstreamClient(config, fetcher = fetch) {
@@ -114,26 +131,29 @@ export async function prepareAssets(body, call, save, { signal, interval = 5000,
 }
 
 export function applyStatus(job, upstream) {
-  const status = { queued: 'queued', pending: 'queued', processing: 'in_progress', running: 'in_progress', in_progress: 'in_progress', completed: 'completed', failed: 'failed', canceled: 'failed', cancelled: 'failed', expired: 'failed' }[upstream.status];
-  if (!status) throw fail(`未知上游任务状态：${upstream.status}`, 502, 'upstream_invalid_response');
-  job.status = status;
-  if (Number.isFinite(upstream.progress)) job.progress = Math.max(0, Math.min(100, upstream.progress));
-  if (status === 'completed') {
+  const statuses = { queued: 'queued', pending: 'queued', processing: 'running', running: 'running', in_progress: 'running', completed: 'succeeded', failed: 'failed', canceled: 'cancelled', cancelled: 'cancelled', expired: 'expired' };
+  if (!Object.hasOwn(statuses, upstream.status)) throw fail(`未知上游任务状态：${upstream.status}`, 502, 'upstream_invalid_response');
+  const status = statuses[upstream.status];
+  if (status === 'succeeded') {
     const url = upstream.video_url || upstream.result_url;
     if (!url) throw fail('上游任务完成但没有视频地址', 502, 'upstream_invalid_response');
     job.video_url = httpUrl(url);
-    job.progress = 100;
-    job.completed_at ||= Math.floor(Date.now() / 1000);
+    if (Number.isFinite(upstream.actualDuration) && upstream.actualDuration > 0) job.duration = upstream.actualDuration;
+    const tokens = upstream.usage?.total_tokens ?? upstream['usage.total_tokens'];
+    if (Number.isSafeInteger(tokens) && tokens >= 0) job.usage = { completion_tokens: tokens, total_tokens: tokens };
   }
-  if (status === 'failed') job.error = { code: 'generation_failed', message: String(upstream.error?.message || upstream.error_message || upstream.error || '上游视频生成失败').slice(0, 1000) };
+  if (['failed','expired'].includes(status)) job.error = { code: status === 'expired' ? 'task_expired' : 'generation_failed', message: String(upstream.error?.message || upstream.error_message || upstream.error || '上游视频生成失败或超时').slice(0, 1000) };
+  job.status = status;
 }
 
-export function videoObject(job) {
+export function taskObject(job) {
   return {
-    id: job.id, object: 'video', model: job.model, status: job.status, progress: job.progress,
-    created_at: job.created_at, completed_at: job.completed_at || null, expires_at: null,
-    prompt: job.body.prompt, seconds: job.seconds, size: job.size, error: job.error || null,
-    remixed_from_video_id: null, ...(job.video_url ? { video_url: job.video_url } : {}),
-    ...(job.remoteId ? { upstream_id: job.remoteId } : {}),
+    id: job.id, model: job.model, status: job.status,
+    created_at: job.created_at, updated_at: job.updated_at ?? job.created_at,
+    content: job.status === 'succeeded' ? { video_url: job.video_url } : {},
+    duration: job.duration ?? job.body.duration, ratio: job.body.aspect_ratio, resolution: job.body.resolution,
+    generate_audio: job.body.generate_audio ?? true, error: job.error || null,
+    ...(job.body.seed !== undefined ? { seed: job.body.seed } : {}),
+    ...(job.usage ? { usage: job.usage } : {}),
   };
 }
